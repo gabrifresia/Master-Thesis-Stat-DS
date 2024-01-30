@@ -1,0 +1,600 @@
+---
+title: "Thesis Draft"
+output: html_notebook
+---
+
+## Introduction
+The following R markdown file contains the code to reproduce the cross-sectional
+analyses. Data from Baseline and Week 8 are employed separately. The code is
+divided in 7 parts:
+- Data preparation
+- Missing data and multiple imputation
+- Exploratory factor analysis (EFA)
+- Factor scores exploration
+- Optimal number of clusters
+- Clustering
+- Clusters' interpretation
+- 3D Representation
+
+##########################
+## Part 1: DATA PREPARATION
+##########################
+
+PACKAGE INSTALLATION:
+
+```{r}
+#install.packages('readxl') 
+#install.packages('mice')
+#install.packages('caret')
+#install.packages('psych')
+#install.packages('cluster')
+#install.packages('factoextra')
+#install.packages('plotly')
+#install.packages('dplyr')
+```
+
+
+NECESSARY LIBRARIES ARE IMPORTED
+
+```{r}
+library("readxl") #
+library("mice") #
+library("caret") #
+library("psych") #
+library("cluster")    #
+library("factoextra") #
+library("plotly") #
+library("dplyr") #
+```
+
+
+LOADING THE DATASET
+
+The dataset imported contains the demographic information about the patients,
+namely:
+- Centre: The rheumatology centre that the patient attended
+- AgeW104: The age of the patient at the end of the trial (at week 104)
+- Gender
+- RF: Presence of rheumatoid factor in the serum (yes/no)
+- ACPA: Presence of Anti-cyclic citrullinated peptide antibody in the serum (yes/no)
+- Eros: Presence of bone erosions (yes/no)
+
+Furthermore, the dataset contains the nine variables employed in the analyses,
+assessed at the 10 visits. These are.
+- HAQ: Health Assessment Questionnaire
+- VAS.Pain: Pain measured on a visual analog scale (VAS)
+- TJC28: Tender joint count
+- SJC28: Swollen joint count
+- CRP: C-reactive protein
+- VASASS: Patient global health assessment measured on a VAS
+- VASPHYS: Physician global health assessment measured on a VAS
+- VASFAT: Fatigue measured on a VAS
+- ESR:Erythrocyte sedimentation rate
+
+For further information on the meaning on each variable, please consult
+Chapter 2 of the thesis.
+```{r}
+df = read_excel("CareRAbase.xlsx")
+```
+
+
+DATA EXPLORATION 
+
+```{r}
+# Amount of NAs in every columns
+colSums(is.na(df[,10:27]))
+
+# Transform the columns containing the variables into numeric 
+df[,10:27]=as.data.frame(lapply(df[,10:27],as.numeric))
+
+# Remove the patientID, the weight and height of the patients and any measurements
+# after week 8
+df = df[,c(2:7,10:27)]
+```
+
+
+################################################
+## Part 2: MISSING DATA AND MULTIPLE OUTPUTATION
+################################################
+
+MISSINGNESS
+
+Compute the percentage of missingness at the two visits (this will be useful for
+the multiple imputation)
+
+```{r}
+#Percentage of missing data among the variables
+print(paste(round(sum(colSums(is.na(df[,7:24])))/(18*379)*100,1), "% is the 
+percentage of missing data among the variables in the cross sectional analyses"))
+
+#Percentage of missing data among the variables
+print(paste(round(sum(colSums(is.na(df[,7:15])))/(9*379)*100,1), "% is the 
+percentage of missing data among the variables at baseline"))
+
+#Percentage of missing data among the variables
+print(paste(round(sum(colSums(is.na(df[,16:24])))/(9*379)*100,1), "% is the 
+percentage of missing data among the variables at week 8"))
+```
+
+
+MULTIPLE IMPUTATION 
+
+Multiple imputation is carried out using classification and regression trees as 
+conditional model. We impute two dataset given the 1.9% of missing data between
+the two analyses. Further information can be found in Section 3.1 of the thesis
+```{r}
+tempData <- mice(df, m=2, maxit=5, meth='cart', minbucket = 5, seed=500)
+```
+
+############################################
+## Part 3: EXPLORATORY FACTOR ANALYSIS (EFA)
+############################################
+
+COMPUTE THE CORRELATION MATRIX
+
+EFA is carried out on the correlation matrix of the dataset. Since we have two
+imputed, complete datasets, we compute the correlation matrix of each and average
+them. EFA is then carried out on the average correlation matrix.
+
+```{r}
+# Retrieve the complete dataset
+p1 = complete(tempData,1)[,(7:24)]
+p2 = complete(tempData,2)[,(7:24)]
+
+# Compute the average correlation matrix
+correlation = (cor(p1)+cor(p2))/2
+
+# Separate the correlation matrix between the two visits
+c_baseline = correlation[(1:9),(1:9)] #correlation of the variables at baseline
+c_w8 = correlation[(10:18),(10:18)] #correlation of the variables at week 8
+```
+
+
+EFA WITH PRINCIPAL COMPONENT EXTRACTION
+
+We extract 3 factors and rotate them through promax rotation. Further details 
+about the extraction and rotation can be found in Section 3.2 of the thesis
+
+Below there are the factor loadings at baseline. At baseline, the assessment by
+the physician has a double loading, on the clinical and the patient-reported 
+factors. This is because, at baseline, the assesment of the physician is 
+correlated with what the patient thinks and the clinical results.
+
+```{r}
+fit_baseline <- principal(c_baseline, nfactors=3, rotate="promax")
+
+print(fit_baseline$loadings, cutoff = 0.3)
+```
+
+Below there are the factor loadings at Week 8. No factor loadings are present
+
+```{r}
+fit_w8 <- principal(c_w8, nfactors=3, rotate="promax")
+
+print(fit_w8$loadings,cutoff = 0.3)
+```
+
+
+TUCKERS CONGRUENCE COEFFICIENT
+
+Through Tucker's congruence coefficient, we can evaluate the similarity between
+multiple factor interpretations, specifically between the factors uncovered at 
+the two visits. Given the high coefficients along the diagonal (all 0.99), the
+homonymous factors can be considered as equal.
+
+```{r}
+factor.congruence(fit_baseline$loadings, fit_w8$loadings)
+```
+
+RESCALING OF THE VARIABLES
+
+To obtain the factor scores we need to first average the complete datasets (this
+can be done since the differences between the two complete datasets are minimal
+and the percentage of missingness was low).
+Variables need to be rescaled because they are measured on different ranges.
+HAQ for example has a range [0-3], whereas any variable measured on the VAS has
+a range [0-100]. All the variables are rescaled to a [0-100] range. Section 3.3
+of the thesis contains further information regarding the rescaling of CRP and ESR.
+
+```{r}
+#Average the two complete datasets to get the factor values for each observation
+complete_df = (p1+p2)/2
+
+
+#Rescale the dataset so that each variable ranges from 0 to 100
+for (col_name in names(complete_df)) {
+  if (grepl("HAQ", col_name))
+    complete_df[,col_name] = complete_df[,col_name]/3*100
+  else if (grepl("JC", col_name))
+    complete_df[,col_name] = complete_df[,col_name]/28*100 #Rescaling of both TJC and SJC
+  else if (grepl("CRP", col_name)) {
+    complete_df[,col_name] = complete_df[,col_name]/20*100 
+    complete_df[,col_name] = pmin(complete_df[,col_name], 100)
+  }
+  else if (grepl("ESR", col_name)) {
+    complete_df[,col_name] = complete_df[,col_name]/88*100 
+    complete_df[,col_name] = pmin(complete_df[,col_name], 100)
+  }
+}
+```
+
+FACTOR SCORES
+
+We create the factor scores matrix by  multiplied the scaled variables by their
+factor loadings and sum them up so that each factor would comprise the variables
+that loaded onto it. This is done for both the factor loadings at baseline and 
+at week 8. Due to the different number of variables for each factor, each factor 
+score was then standardized to a [0–1] scale.
+
+
+```{r}
+# Create the factor matrix
+factors = data.frame(matrix(ncol = 0, nrow = 379))
+
+# Patient-reported factor at baseline
+factors$PRF1 = (0.885 * complete_df$VASFAT.0) + (0.929 * complete_df$VASASS.0) + (0.964 * complete_df$VAS.pain.0) + (0.594 * complete_df$HAQ.0)
+# Clinical factor at baseline
+factors$CF1 = (0.962 * complete_df$TJC28.0) + (0.967 * complete_df$SJC28.0) + (0.640 * complete_df$VASPHYS.0)
+#Laboratory factor at baseline
+factors$LF1 = (0.891 + complete_df$CRP.0) + (0.889 * complete_df$ESR.0)
+
+# Patient-reported factor at week 8
+factors$PRF2 = (0.938 * complete_df$VASFAT.8) + (0.902 * complete_df$VASASS.8) + (0.871 * complete_df$VAS.pain.8) + (0.618 * complete_df$HAQ.8)
+# Clinical factor at week 8
+factors$CF2 = (0.891 * complete_df$TJC28.8) + (0.975 * complete_df$SJC28.8) + (0.677 * complete_df$VASPHYS.8)
+# Laboratory factor at week 8
+factors$LF2 = (0.838 + complete_df$CRP.8) + (0.853 * complete_df$ESR.8)
+
+#Rescale the factors 
+process <- preProcess(as.data.frame(factors), method=c("range"))
+factors <- predict(process, as.data.frame(factors))
+```
+
+####################################
+## Part 4: FACTOR SCORES EXPLORATION
+####################################
+
+HISTOGRAMS
+
+Through various exploration techniques we check the distribution of the factors.
+First, we compare the distribution at baseline and at week 8 for each of the 
+factor scores through histograms.
+
+Patient reported factor:
+```{r}
+par(mfrow=c(2,1))
+par(mar=c(0,5,3,3))
+
+hist(factors$PRF1, breaks = 100, main="" , ylim=c(0,35), ylab="Baseline", xlab="", xaxt="n", las=1 , col="#56B4E9")
+
+par(mar=c(5,5,0,3))
+hist(factors$PRF2, breaks = 100, main="" , ylim=c(35,0), ylab="Week 8", xlab="Patient Factor", las=1 , col="#009E73" )
+```
+
+Clinical Factor:
+```{r}
+par(mfrow=c(2,1))
+par(mar=c(0.5,5,3,3))
+
+hist(factors$CF1, breaks = 100, main="" , ylim=c(0,80), ylab="Baseline", xlab="", xaxt="n", las=1 , col="#56B4E9")
+
+par(mar=c(5,5,0,3))
+hist(factors$CF2, breaks = 100, main="" , ylim=c(80,0), ylab="Week 8" , xlab=" Clinical Factor" , las=1 , col="#009E73" )
+```
+
+Laboratory factor:
+```{r}
+par(mfrow=c(2,1))
+par(mar=c(0,5,3,3))
+
+hist(factors$LF1, breaks = 100, main="" , ylim=c(0,35), ylab="Baseline", xlab="", xaxt="n", las=1 , col="#56B4E9")
+
+par(mar=c(5,5,0,3))
+hist(factors$LF2, breaks = 100, main="" , ylim=c(35,0), ylab="Week 8", xlab="Laboratory Factor", las=1 , col="#009E73" )
+```
+COMPARE FACTOR SCORES BETWEEN BASELINE AND WEEK 8
+
+For each factor, we compare the factor scores for each patient between Baseline
+and Week 8.
+
+Patient reported factor:
+```{r}
+ggplot(data = factors, mapping = aes(x = PRF1, y = PRF2)) +
+  geom_point() +
+  geom_abline(lty = 2) +
+  coord_fixed() +
+  labs(x = "Baseline", y = "Week 8") +
+  theme_minimal() +
+  theme(text=element_text(size=20))
+```
+
+Clinical factor:
+```{r}
+ggplot(data = factors, mapping = aes(x = CF1, y = CF2)) +
+  geom_point() +
+  geom_abline(lty = 2) +
+  coord_fixed() +
+  labs(x = "Baseline", y = "Week 8") +
+  theme_minimal() +
+  theme(text=element_text(size=20))
+```
+
+Laboratory factor:
+```{r}
+ggplot(data = factors, mapping = aes(x = LF1, y = LF2)) +
+  geom_point() +
+  geom_abline(lty = 2) +
+  coord_fixed() +
+  labs(x = "Baseline", y = "Week 8")+
+  theme_minimal() +
+  theme(text=element_text(size=20))
+```
+
+
+#####################################
+## Part 5: OPTIMAL NUMBER OF CLUSTERS
+#####################################
+
+BASELINE
+
+For each visit we employ various techniques to uncover the optimal number of clusters.
+For more information about the choice of methods, please refer to Sections 3.4 
+of the thesis.
+
+Ultimately, four was chosen as the optimal number of clusters for both analyses.
+More information can be found at Section 4.2 of the thesis
+
+```{r}
+baseline_factors = factors[,(1:3)]
+```
+
+
+Average Silhouette Method
+```{r}
+fviz_nbclust(baseline_factors, kmeans, method = "silhouette") +
+  ggtitle("") +
+  theme(text=element_text(size=20))
+```
+
+
+Gap Statistic Method
+```{r}
+gap_stat <- clusGap(baseline_factors, FUN = kmeans, nstart = 30, K.max = 10, B = 50)
+fviz_gap_stat(gap_stat)+
+  ggtitle("") +
+ theme(text=element_text(size=20))
+```
+
+
+WEEK 8
+
+```{r}
+week8_factors = factors[,(4:6)]
+```
+
+
+Average Silhouette Method
+```{r}
+fviz_nbclust(week8_factors, kmeans, method = "silhouette") +
+  ggtitle("") +
+  theme(text=element_text(size=20))
+```
+
+
+Gap Statistic Method
+```{r}
+set.seed(123)
+gap_stat <- clusGap(week8_factors, FUN = kmeans, nstart = 25,
+                    K.max = 10, B = 50)
+
+fviz_gap_stat(gap_stat) +
+  ggtitle("") +
+  theme(text=element_text(size=20))
+```
+
+#####################
+## Part 6: CLUSTERING
+#####################
+
+HKMEANS
+
+Hierarchical K-means clustering is applied to both visits, uncovering four 
+clusters at each time point.
+
+```{r}
+baseline = hkmeans(baseline_factors, 4)
+
+week8 = hkmeans(week8_factors, 4)
+```
+
+CLUSTER ALIGNMENT
+
+By analyzing the centroids of the four clusters from the two visits we discovered 
+which clusters could be aligned. Since the clustering did not output the clusters
+in the same order across the two visits, we need to align these.
+At baseline, the clusters found are labelled: "mildly symptomatic", "unmet needs", 
+"non-inflammatory burden", and "vulnerable".
+At week 8, the clusters found are labelled: "mildly symptomatic", "unmet needs", 
+"non-inflammatory burden", and "inflammatory burden".
+We align the clusters so that they are in the same order as reported here above.
+
+We create a function named swap_rows. This function swap the rows of the centroids,
+so that they are shown in the order displayed above.
+
+```{r}
+swap_rows <- function(df, index1, index2) {
+  temp <- df[index1, ]
+  df[index1, ] <- df[index2, ]
+  df[index2, ] <- temp
+  return(df)
+}
+
+# These are the centroids as output from the HKmeans algorithm
+centroids_bl = baseline$centers
+centroids_w8 = week8$centers
+
+# We swap the rows so that they have the same order as displayed above
+centroids_bl = swap_rows(centroids_bl,1,3)
+centroids_bl = swap_rows(centroids_bl,4,3)
+centroids_w8 = swap_rows(centroids_w8,1,2)
+centroids_w8 = swap_rows(centroids_w8,3,4)
+```
+
+PATIENT ALIGNMENT
+
+We have aligned the clusters' centroids, but the patients are still assigned to 
+the cluster number from before the alignment. The membership of the patients is
+stored in the "baseline\$cluster" and "week8\$cluster". These vectors contain
+a series of 379 values between 1 and 4 indicating the patient's cluster membership. 
+We need to align these based on the previous clusters alignment.
+
+```{r}
+transform_vector <- function(input_vector, mapping) {
+  output_vector <- input_vector
+  for (from_value in names(mapping)) {
+    to_value <- mapping[from_value]
+    output_vector[input_vector == as.numeric(from_value)] <- as.numeric(to_value)
+  }
+  return(output_vector)
+}
+
+# Mapping for baseline
+custom_mapping_bl <- c("1" = "4", "3" = "1", "4" = "3") 
+# Mapping for Week 8
+custom_mapping_w8 <- c("2" = "1", "1" = "2", "3" = "4", "4" = "3") 
+
+# Updated vectors containing the patients cluster memberships
+cluster_bl <- transform_vector(baseline$cluster, custom_mapping_bl)
+cluster_w8 <- transform_vector(week8$cluster, custom_mapping_w8)
+```
+
+
+PATIENT-CLUSTER MEMBERSHIP
+
+Through the table function we can check how the membership of the patients to the
+clusters changes at the two time points. The leftmost column contains the four
+different clusters from Baseline, while the top row specifies the four clusters
+from Week 8.
+
+```{r}
+table(cluster_bl, cluster_w8)
+```
+
+###################################
+## Part 7: CLUSTERS' INTERPRETATION
+###################################
+
+To determine the clinical relevance of the cluster solutions, we examined 
+socio-demographic and health variables, as well as treatment strategies.
+
+For each cluster we checked:
+- Mean age
+- Percentage of women
+- Percentage of patients that have been classified as low-risk
+- Percentage of patients that displayed comorbidities at baseline
+- Distribution of patients across the clusters for each treatment strategy
+
+We load another file containing extra information on the patients
+
+```{r}
+group = read_excel("Interpretation.xlsx")
+```
+
+
+We create a dataframe that contains for each patients:
+- Patient ID
+- The factor scores at baseline (1) and week8 (2)
+- The clusters they belonged to at baseline and at week 8
+- The demographics employed at the beginning of the analysis (gender, age, etc.)
+- The treatment group
+- The risk group
+- Presence of comorbidities
+
+```{r}
+clusters = cbind(group[,1], factors, cluster_bl, cluster_w8, df[,1:6], group[,2:5])
+clusters$`risk group` = as.factor(clusters$`risk group`)
+clusters$Comorbidities = as.factor(clusters$Comorbidities)
+clusters$treatmentgroup = as.factor(clusters$treatmentgroup)
+```
+
+
+The following functions give a summary of a specific variable for each for the
+clusters. The function "calculate_stats_by_group" gives the mean and standard
+deviation of a certain variable for each of the clusters. It can be employed for
+numerical variables (such as age, but also the factor scores at the two visits)
+
+```{r}
+calculate_stats_by_group <- function(dataframe, value_col, group_col) {
+  result <- tapply(dataframe[[value_col]], dataframe[[group_col]], function(x) c(mean = mean(x), sd = sd(x)))
+  print(result)
+}
+
+# Examples
+calculate_stats_by_group(clusters, "AgeW104", "cluster_bl")
+calculate_stats_by_group(clusters, "PRF1", "cluster_bl")
+calculate_stats_by_group(clusters, "CF2", "cluster_w8")
+```
+
+
+The function "generate_summary" provides a distribution of patients across the 
+clusters for a certain categorical variable. It can be employed for factors such
+as the gender, risk group or comorbidities. 
+
+```{r}
+generate_summary <- function(dataframe, categorical_col, based_on_col) {
+  summary_table <- table(dataframe[[based_on_col]], dataframe[[categorical_col]])
+  print(summary_table)
+}
+
+# Examples
+generate_summary(clusters, "risk group", "cluster_bl")
+generate_summary(clusters, "Gender", "cluster_bl")
+generate_summary(clusters, "Comorbidities", "cluster_w8")
+```
+############################
+## Part 8: 3D REPRESENTATION
+############################
+
+We provide a 3D representation of the patients scores at each time visits, colored
+by their cluster memberships
+
+Baseline
+```{r}
+p <- plot_ly(clusters, x=~PRF1, y=~CF1, z=~LF1, color=as.factor(cluster_bl), colors = c("#02e066", "#E7B800", "#FC4E07", "#030103")) %>%
+     add_markers(size=1.5)
+print(p)
+```
+
+
+Week 8
+```{r}
+p <- plot_ly(clusters, x=~PRF2, y=~CF2, z=~LF2, color=as.factor(clusters$cluster_w8), colors = c("#02e066", "#E7B800", "#FC4E07", "#af2bd4")) %>%
+     add_markers(size=1.5)
+print(p)
+```
+
+
+```{r}
+cl_2 = clusters
+cl_2$cluster_w8[cl_2$cluster_bl == 1 & cl_2$cluster_w8 == 2] = 5
+cl_2$cluster_w8[cl_2$cluster_bl == 2 & cl_2$cluster_w8 == 3] = 6
+
+
+p <- plot_ly(cl_2, x=~PRF2, y=~CF2, z=~LF2, color=as.factor(cl_2$cluster_w8), colors = c("#02e066", "#E7B800", "#FC4E07", "black", "purple", "royal blue")) %>%
+     add_markers(size=1.5)
+print(p)
+```
+
+
+Variable exploration
+
+
+```{r}
+hist(complete_df$CRP.0, breaks = 30)
+boxplot(complete_df$ESR.0, xlab="ESR")
+
+ggplot(complete_df, aes(x = "", y = CRP.0)) + 
+  geom_jitter(width = 0.2) +
+  geom_boxplot(alpha = 1, width = 0.4,  outlier.color = "transparent")
+```
+
