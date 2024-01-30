@@ -1,0 +1,694 @@
+---
+title: "Thesis Part B"
+author: "Gabriele"
+date: "20/11/2023"
+output: pdf_document
+---
+
+```{r}
+#install.packages("rlist")
+#install.packages("IrregLong")
+
+library("readxl")
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library("mice")
+library("caret")
+library("rlist")
+library("psych")
+
+```
+
+```{r}
+demographics = read_excel("CareRAbase.xlsx")
+
+CRP = demographics[,seq(14, 99, by=9)]
+
+CRP = as.data.frame(lapply(CRP,as.numeric))
+
+Exceeding = filter_all(CRP, any_vars(. > 75))
+Exceeding$ID = seq(1,length(Exceeding[,1]))
+```
+
+
+Count how many Observations are above a certain level
+```{r}
+sum(!is.na(CRP)) #number of non Nans
+sum(CRP > 20, na.rm = TRUE)
+```
+
+```{r}
+boxplot(CRP, col = "lightblue", main = "Boxplot for each week, with y axis limits", xlab = "Week", ylab = "CRP")
+```
+
+
+
+
+```{r}
+CRP_long <- gather(Exceeding, key = "CRP.", value = "Measurement", -ID)
+
+
+CRP_long$CRP. <- as.numeric(gsub("CRP.", "", CRP_long$CRP.))
+
+
+ggplot(CRP_long, aes(x = as.numeric(CRP.), y = Measurement, group = ID, color = as.factor(ID))) +
+  geom_path(na.rm = TRUE) +
+  geom_hline(yintercept = 20, linetype = 2) +
+  labs(title = "Individual trend for patients who surpass the 75 threshold",
+       x = "Week",
+       y = "CRP") +
+  theme_minimal()
+```
+
+
+```{r}
+demographics = read_excel("CareRAbase.xlsx")
+demographics[,c(3,8:99)] = as.data.frame(lapply(demographics[,c(3,8:99)],as.numeric))
+demographics = demographics[,-(8:9)]
+
+
+tempData <- mice(demographics, m=20, maxit=5, meth='cart', minbucket = 5, seed=500, print = FALSE) #CHANGE DEMOGRAPHICS + CHANGE M = 15
+```
+
+WIDE TO LONG
+
+```{r}
+library(tidyverse)
+
+
+mybiglist <- list()
+
+
+for(i in 1:20){ #CHANGE TO 1:15
+  name = paste('DF',i,sep='')
+  tmp = complete(tempData,i)[,(26:97)] #tmp = complete(tempData,i)[,(1:18)] 
+  #19:90 or 91 CHECK WHETHER DEMOGRAPHICS ARE INCLUDED
+  tmp = cbind(demographics[,1],tmp)
+  names(tmp) = c("id" ,rep(c("HAQ","VAS.pain","TJC28","SJC28","CRP","VASASS","VASPHYS","VASFAT","ESR"), times = 8))
+  #TIMES = how many visits
+  df =  rbind(tmp[,1:10], tmp[,c(1,11:19)], tmp[,c(1,20:28)], tmp[,c(1,29:37)], tmp[,c(1,38:46)], tmp[,c(1,47:55)], tmp[,c(1,56:64)], tmp[,c(1,65:73)]) #df =  rbind(tmp[,1:10], tmp[,c(1,11:19)])
+  #SARANNO 8 DIVERSI DATAFRAMES
+  df = df %>% arrange(id)
+  mybiglist[[name]] = df
+}
+
+```
+
+
+
+MULTIPLE OUTPUTATION
+```{r}
+# Install and load the necessary packages
+# install.packages("dplyr")
+library(dplyr)
+
+# Function to sample one row per patient
+sample_one_row_per_patient <- function(longitudinal_data, patient_id_col) {
+  result <- longitudinal_data %>%
+    group_by({{patient_id_col}}) %>%
+    sample_n(1) %>%
+    ungroup()
+  
+  return(result)
+}
+
+# Example usage
+# Assuming your dataset is named 'longitudinal_data' and the patient ID column is named 'patient_id'
+# Replace 'longitudinal_data' and 'patient_id' with your actual data and column name
+result_df <- sample_one_row_per_patient(mybiglist$DF1, patient_id_col = id)
+
+
+MEGALIST = list()
+
+for (i in 1:20) { #change to 15
+  for (j in 1:100) {
+    result_df <- sample_one_row_per_patient(mybiglist[[i]], patient_id_col = id)
+    MEGALIST = list.append(MEGALIST, as.data.frame(result_df))
+  }
+ # tmplist = replicate(2, as.data.frame(sample_one_row_per_patient(mybiglist[[i]], patient_id_col = id)))
+  
+}
+
+
+```
+
+
+
+CORRELATION LIST
+```{r}
+corrlist = list()
+
+#IMPLEMENT THIS
+#cor(prova[[1]][-1])
+
+for (i in 1:2000) { #CHANGE TO WHATEVER NUMBER
+    tmpcorr = cor(MEGALIST[[i]][-1])
+    corrlist <- list.append(corrlist, tmpcorr)
+}
+
+
+ultimate = Reduce("+",corrlist)/length(corrlist)
+# cor(as.data.frame(tmplist[-1,i]))
+```
+
+
+EFA
+```{r}
+
+fit_baseline <- principal(ultimate, nfactors=3, rotate="promax")
+
+print(fit_baseline$loadings, cutoff = 0.00001)
+```
+
+NORMALIZATION
+```{r}
+names = c("HAQ","VAS.pain","TJC28","SJC28","CRP","VASASS","VASPHYS","VASFAT","ESR")
+
+
+for (i in 1:2000) { #CHANGE TO TOTAL NUMBER
+    for (col_name in names) {
+      if (grepl("HAQ", col_name))
+        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/3*100
+      else if (grepl("JC", col_name))
+        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/28*100
+      else if (grepl("CRP", col_name)) {
+        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/20*100 #CAMBIA VALORIIIIII (20)
+        MEGALIST[[i]][,col_name] = pmin(MEGALIST[[i]][,col_name], 100)
+      }
+      else if (grepl("ESR", col_name)) {
+        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/88*100 #CAMBIA TO 88
+        MEGALIST[[i]][,col_name] = pmin(MEGALIST[[i]][,col_name], 100)
+      }
+  }
+}
+
+```
+
+
+FACTOR SCORES
+```{r}
+faclist = list()
+factors = data.frame(matrix(ncol = 0, nrow = 379))
+
+
+for (i in 1:2000) { #CHANGE TO WHATEVER NUMBER
+  factors$PRF = (0.901 * MEGALIST[[i]]$VASFAT) + (0.933 * MEGALIST[[i]]$VASASS) + (0.918 * MEGALIST[[i]]$VAS.pain) + (0.647 * MEGALIST[[i]]$HAQ)
+  factors$CF = (0.839 * MEGALIST[[i]]$TJC28) + (0.937 * MEGALIST[[i]]$SJC28) + (0.712 * MEGALIST[[i]]$VASPHYS)
+  factors$LF = (0.850 + MEGALIST[[i]]$CRP) + (0.855 * MEGALIST[[i]]$ESR)
+  
+  process <- preProcess(as.data.frame(factors), method=c("range"))
+  factors <- predict(process, as.data.frame(factors))
+  
+  faclist <- list.append(faclist, factors)
+}
+```
+
+
+
+OVERALL MEAN AND STD OF ALL DATASETS (CHANGE THE ARGUMENT SO THAT YOU CAN INSERT THE NUMBER OF THE COLUMN AND GET ALL THREE FACTOR SCORES)
+```{r}
+calculate_overall_mean_sd <- function(df_list) {
+  # Combine the first columns of all dataframes into a single vector
+  all_data <- unlist(lapply(df_list, function(df) df[, 3]))
+
+  # Calculate overall mean and standard deviation
+  overall_mean <- mean(all_data, na.rm = TRUE)
+  overall_sd <- sd(all_data, na.rm = TRUE)
+
+  # Return a vector with the mean and standard deviation
+  result_vector <- c(mean = overall_mean, sd = overall_sd)
+  return(result_vector)
+}
+
+result <- calculate_overall_mean_sd(faclist)
+```
+
+
+
+```{r}
+
+hist(unlist(lapply(faclist, function(df) df[, 1])), breaks = 100, main="" , ylab= "", xlab="", las=1 , col="#56B4E9")
+
+
+
+```
+
+
+
+#####################################################
+# CLUSTERING
+#####################################################
+
+
+OPTIMAL NUMBER OF CLUSTERS (4)
+```{r}
+#install.packages("miclust")
+library(miclust)
+library(tidyverse)  # data manipulation
+library(cluster)    # clustering algorithms
+library(factoextra)
+library(clue)
+
+
+optm = rep(0,2000)
+a =  data.frame()
+
+for (i in 1:2000) {
+  xx = miclust(faclist[[i]], ks = 4:8, distance = "euclidean", initcl = "hc", verbose = FALSE)
+  # a contains the CritCF for 4:6 for each of the 2000 datasets
+  a = rbind(a, data.frame(t(unlist(xx$critcf)))) 
+  # optm is a 2000 cells vector containing the optimal number of clusters for each of the 2000 datasets
+  optm[i] = xx$kfin
+}
+
+names(a) = c(4,5,6,7,8)
+boxplot(a, col = "lightblue", main = "CritCF distribution by number of cluster (k)", xlab = "k", ylab = "CritCF")
+
+table(optm)/20
+```
+
+CREATE CLUSTERS OUT OF CENTROIDS AND FIND THEIR CENTROIDS
+```{r}
+centroids = data.frame()
+clusters = data.frame(matrix(vector(), 379, 2000))
+
+for (i in 1:2000) {
+  #if (optm[i] == 4) {
+    cl = hkmeans(faclist[[i]], 4)
+    centroids = rbind(centroids, cbind(cl$centers, cl$size))
+    clusters[,i] =  cl$cluster
+    
+  #}
+}
+
+
+centroids <- centroids %>%
+  mutate(GroupedRowNames = rep(seq(1, nrow(centroids)/4), each = 4),
+         RowName = paste0((GroupedRowNames - 1) * 10 + 1, ":", GroupedRowNames * 10 + 4))
+centroids = centroids[,-6]
+
+#Da cambiare i valori in modo da arrivare a 8000!
+centroids$cluster = rep(seq(1,4), 2000)
+centroids$newcluster = rep(0, 8000)
+
+
+centerstotal = hkmeans(centroids[,c(1,2,3)],4)
+```
+
+
+CLUSTER ALIGNMENT 
+```{r}
+general = split(centerstotal$centers, seq(4))
+
+
+swap = function(vect) {
+  # Compute the distance matrix 
+  distance_matrix <- outer(vect, general, Vectorize(function(x, y) sum((x - y)^2)))
+
+  # Use the Hungarian algorithm to find the optimal pairing
+  assignment <- solve_LSAP(distance_matrix)
+
+  return(assignment[])
+  # Get the indices of the matched vectors
+  #matched_indices <- data.frame(list1_index = 1:length(list1), list2_index = seq_along(assignment))
+}
+
+
+for (i in 1:2000) {
+  x <- split(as.matrix(as.data.frame(centroids[((i-1)*4+1):((i-1)*4+4),1:3])), seq(4))
+  relabel = swap(x)
+  centroids[((i-1)*4+1):((i-1)*4+4),7] = relabel
+  #RELABEL
+  clusters[,i] =  relabel[clusters[,i]]
+  
+}
+
+
+table(centroids$newcluster)
+
+aggregate(V4~newcluster,centroids,sum)/2000
+
+
+
+num <- aggregate(V4~newcluster,centroids,length)
+names(num)[2] <- 'num'
+
+totalB <- aggregate(V4~newcluster,centroids,sum)/2000
+names(totalB)[2] <- 'totalB'
+totalB
+
+
+```
+
+COMPUTE MEAN AND STD FOR THE THREE FACTORS ACROSS THE CLUSTERS
+```{r}
+calculate_stats_by_group <- function(dataframe, value_col, group_col) {
+  result <- tapply(dataframe[[value_col]], dataframe[[group_col]], function(x) c(mean = mean(x), sd = sd(x)))
+  print(result)
+  #return(as.data.frame(result))
+}
+
+
+calculate_stats_by_group(centroids, "PRF", "newcluster")
+```
+
+
+
+DOUBLE CHECK THE CLUSTER ASSIGNMENT SIZE
+```{r}
+flat_vector <- as.vector(as.matrix(clusters))
+
+# Use the table function to get the frequency of each unique value
+ table(flat_vector)/2000
+```
+
+ASSIGN EACH PATIENT TO A CLUSTER BY MAJORITY VOTE
+```{r}
+# Function to get the most frequent value in a vector
+most_frequent_value <- function(x) {
+  tbl <- table(x)
+  as.numeric(names(tbl)[which.max(tbl)])
+}
+
+# Create a new column with the most frequent value for each row
+clusters$most_frequent_col <- apply(clusters, 1, most_frequent_value)
+
+# Print the updated dataframe
+table(clusters$most_frequent_col)
+```
+
+PERCENTAGE OF ASSIGNMENT
+```{r}
+
+# Function to get the most frequent value and its percentage in a vector
+most_frequent_stats <- function(x) {
+  tbl <- table(x)
+  most_frequent <- as.numeric(names(tbl)[which.max(tbl)])
+  percentage <- tbl[most_frequent] / 20 #length(x) * 100
+  c(most_frequent = most_frequent, percentage = percentage)
+}
+
+# Create a new column with the most frequent value and its percentage for each row
+result <- t(apply(clusters, 1, most_frequent_stats))
+clusters$most_frequent_col <- result[, 1]
+clusters$percentage_col <- result[, 2]
+
+
+# average percentage of frequency for each clusters
+aggregate(percentage_col ~ most_frequent_col, data = clusters, FUN = mean)
+
+members_of_cl2 = clusters[clusters$most_frequent_col == 2,]
+summary(members_of_cl2$percentage_col)
+```
+
+COMPUTE MEAN AND STD FOR EACH CLUSTER BY PATIENT AVERAGE
+```{r}
+for (i in 1:2000) {
+  faclist[[i]]$cluster = clusters[,i]
+}
+
+
+
+# Create an empty list to store the dataframes
+averagepatients <- list()
+
+for (j in 1:4) {
+  averagepatients[[j]] = data.frame()
+}
+
+
+for (i in 1:2000) {
+  for (j in 1:4) {
+      # Subset the data for each factor
+    subset_data = filter(faclist[[i]], cluster == j)
+      # Add the subsetted dataframe to the list
+    averagepatients[[j]] = rbind(averagepatients[[j]], subset_data)
+  }
+}
+
+PRF = c(averagepatients[[1]]$PRF, averagepatients[[2]]$PRF, averagepatients[[3]]$PRF, averagepatients[[4]]$PRF)
+
+CF = c(averagepatients[[1]]$CF, averagepatients[[2]]$CF, averagepatients[[3]]$CF, averagepatients[[4]]$CF)
+
+LF = c(averagepatients[[1]]$LF, averagepatients[[2]]$LF, averagepatients[[3]]$LF, averagepatients[[4]]$LF)
+
+```
+
+
+```{r}
+dat <- readRDS("CareRA.rds")
+SR = dat$data
+SR = SR$das28.sr
+```
+
+
+```{r}
+patient_groups = read_excel("intensification profiles at each visit FINAL.xlsx") 
+patient_groups = patient_groups[(1:379),]
+otro = read_excel("CareRA_nonimp_costs.xlsx")
+RAQOL = read_excel("CareRA PRO database_totalscores.xlsx")
+RAQOL = RAQOL[,106:109]
+
+#ids = complete_df[week8$cluster == 3,]
+TOTAL = cbind(clusters$most_frequent_col, demographics[,2:7], patient_groups[,3:4], otro[,11], RAQOL, SR)  #THIS WAS THE "NEW" DATAFRAME
+TOTAL$`risk group` = as.factor(TOTAL$`risk group`)
+TOTAL$Comorbidities = as.factor(TOTAL$Comorbidities)
+#TOTAL$treatmentgroup[TOTAL$treatmentgroup == 4] <- 2
+TOTAL$treatmentgroup = as.factor(TOTAL$treatmentgroup)
+names(TOTAL)[names(TOTAL) == "clusters$most_frequent_col"] <- "clusters"
+names(TOTAL)[names(TOTAL) == "W104_RAQoL_TOTALms"] <- "RAQ"
+
+
+calculate_stats_by_group <- function(dataframe, value_col, group_col) {
+  result <- tapply(dataframe[[value_col]], dataframe[[group_col]], function(x) c(mean = mean(x), sd = sd(x)))
+  print(result)
+  #return(as.data.frame(result))
+}
+
+
+calculate_stats_by_group(TOTAL, "AgeW104", "clusters")
+
+
+generate_summary <- function(dataframe, categorical_col, based_on_col) {
+  summary_table <- table(dataframe[[based_on_col]], dataframe[[categorical_col]])
+  print(summary_table)
+  #return(as.data.frame.matrix(summary_table))
+}
+
+
+
+result_summary <- generate_summary(TOTAL, "risk group", "clusters")
+result_summary <- generate_summary(TOTAL, "treatmentgroup", "clusters")
+result_summary <- generate_summary(TOTAL, "Gender", "clusters")
+result_summary <- generate_summary(TOTAL, "Comorbidities", "clusters")
+result_summary <- generate_summary(TOTAL, "SR", "clusters")
+
+```
+
+```{r}
+# Use aggregate to calculate the mean of Value based on Group
+result <- aggregate(LF ~ newcluster, data = centroids, FUN = sd)
+
+# Print the result
+print(result)
+
+```
+
+
+
+
+```{r}
+# Install and load required packages if not already installed
+# install.packages("dplyr")
+# install.packages("tidyr")
+ library(dplyr)
+ library(tidyr)
+
+# Function to compute percentage of missing values in a column for each group
+compute_missing_percentage <- function(data, group_column, target_column) {
+  result <- data %>%
+    group_by_at(group_column) %>%
+    summarize(missing_percentage = mean(is.na(.data[[target_column]])) * 100)
+  
+  return(result)
+}
+
+
+# Call the function
+result <- compute_missing_percentage(TOTAL, "clusters", "RAQ")
+
+# Print the result
+print(result)
+
+```
+
+
+```{r}
+sum(is.na(TOTAL$RAQ))
+
+TOTAL$RAQ = sqrt(TOTAL$RAQ)
+
+
+# Levene's test for homogeneity of variances with handling NA
+library(car)
+leveneTest(RAQ ~ as.factor(clusters), data = TOTAL, na.action = na.exclude)
+
+# Check normality of residuals using a Q-Q plot with handling NA
+model <- aov(RAQ ~ as.factor(clusters), data = TOTAL, na.action = na.exclude)
+qqnorm(residuals(model, na.action = na.exclude))
+qqline(residuals(model, na.action = na.exclude))
+
+```
+
+
+
+
+```{r}
+Model2 <- lm(RAQ ~ as.factor(clusters), data = TOTAL, na.action = na.exclude)
+
+summary.aov(Model2)
+
+library(emmeans) 
+PostHoc <- emmeans(Model2, "clusters")
+PostHoc
+
+pairs(PostHoc)
+```
+
+```{r}
+# Install and load ggplot2 if not already installed
+# install.packages("ggplot2")
+library(ggplot2)
+
+# Create a ggplot density plot without considering NA
+ggplot(data.frame(TOTAL), aes(x = RAQ)) +
+  geom_density(na.rm = TRUE) +
+  ggtitle("Density Plot without NA") +
+  xlab("Numeric Variable")
+
+```
+
+
+
+```{r}
+library(plotly)
+library(dplyr)
+
+PLOTS3D = centroids[sample(nrow(centroids), 1000), ]
+
+
+
+p <- plot_ly(PLOTS3D, x=~PRF, y=~CF, z=~LF, color=~as.factor(newcluster)) %>%
+     add_markers(size=1.5)
+print(p)
+```
+
+
+
+CLUSTERING
+```{r}
+
+
+fviz_nbclust(faclist[[2]], hkmeans, method = "silhouette")
+
+gap_stat <- clusGap(faclist[[2]], FUN = hkmeans, #nstart = 25,
+                    K.max = 10, B = 50)
+
+print(gap_stat, method = "firstSEmax")
+
+gap_stat$Tab[,c(3,4)]
+
+fviz_gap_stat(gap_stat)
+
+
+```
+
+
+
+```{r}
+library(cluster)
+gap_stat <- clusGap(factors, FUN = kmeans, nstart = 25,
+                    K.max = 10, B = 50)
+
+firstmax(fviz_gap_stat(gap_stat))
+
+
+x = fviz_nbclust(factors, kmeans, method = "gap_stat")
+
+
+gap_stat <- clusGap(factors, FUN = kmeans, nstart = 25, K.max = 10, B = 10)
+optimal_clusters <- gap_stat$tab[which.max(gap_stat$tab$gap), "k"]
+
+```
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+### 
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+
+MULTIPLE OUTPUTATION ALTERNATIVE
+```{r}
+# Specify the block size
+block_size <- 8 #change to 8 because we have 8 visits per patient
+
+# Load the dplyr package
+library(dplyr)
+
+# Function to randomly select one row from each block
+random_sample_block <- function(group) {
+  group[sample(nrow(group), 1), ]
+}
+
+# Apply the function to each block
+sampled_df <- df %>%
+  group_by(block = (row_number() - 1) %/% block_size) %>%
+  do(random_sample_block(.)) %>%
+  ungroup() %>%
+  select(-block)
+
+# %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+many = function(df, block_size) {
+  df %>%
+    group_by(block = (row_number() - 1) %/% block_size) %>%
+    do(random_sample_block(.)) %>%
+    ungroup() %>%
+    select(-block)
+}
+
+MEGALIST = list()
+
+for (i in 1:5) { #change to 15
+  tmplist = replicate(100, as.data.frame(many(mybiglist[[i]],8))) #8 is the blocksize
+  MEGALIST[[i]] = tmplist
+}
+```
+
+CORRELATION LIST ALTERRNATIVE
+```{r}
+library(rlist)
+
+corrlist = list()
+
+#IMPLEMENT THIS
+#cor(prova[[1]][-1])
+
+
+for (i in 1:5) { #CHANGE TO 15
+  for (j in 1:100) {
+    tmpcorr = cor(as.data.frame(MEGALIST[[i]][-1,j])) #MIGHT HAVE TO CHANGE THIS IN CASE NEW VERSION OF MEGALIST IS BETTER
+    corrlist <- list.append(corrlist, tmpcorr)
+  }
+}
+
+
+ultimate = Reduce("+",corrlist)/length(corrlist)
+# cor(as.data.frame(tmplist[-1,i]))
+```
+
