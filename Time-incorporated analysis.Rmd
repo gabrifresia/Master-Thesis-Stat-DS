@@ -1,108 +1,205 @@
 ---
-title: "Thesis Part B"
-author: "Gabriele"
-date: "20/11/2023"
+title: "Thesis - Time-incorporated analysis"
+author: "Gabriele Fresia"
 output: pdf_document
 ---
 
+This code was implemented by Gabriele Fresia (student number: s3121283) for the
+thesis project "Combination of cluster analyses in longitudinal data from
+patients with Early Rheumatoid Arthritis" from the Master program
+"Statistics and Data Science" at Leiden University.
+
+The purpose of the code is to provide the implementation of the analyses described
+in the thesis. Explanation to the code is provided. When further explanation is
+needed, the reader is referred to a specific section in the thesis.
+
+The code has been submitted on February 1st 2024.
+The thesis will be defended on February 15th 2024.
+
+## Introduction
+The following R markdown file contains the code to reproduce the time-incorporated
+analysis. Data from weeks 16,28,40,52,65,78,91,104 are employed. The code is
+divided in 10 parts:
+- Data preparation
+- Missing data and multiple imputation
+- Multiple outputation
+- Exploratory factor analysis (EFA)
+- Factor scores exploration
+- Optimal number of clusters
+- Clustering
+- Assignment of patients
+- Clusters' interpretation
+- 3D Representation
+
+##########################
+## Part 1: DATA PREPARATION
+##########################
+
+PACKAGE INSTALLATION:
+
 ```{r}
+#install.packages('readxl') 
+#install.packages('mice')
+#install.packages('caret')
+#install.packages('psych')
+#install.packages('cluster')
+#install.packages('factoextra')
+#install.packages('plotly')
+#install.packages('dplyr')
+#install.packages("tidyverse")
 #install.packages("rlist")
-#install.packages("IrregLong")
-
-library("readxl")
-library(dplyr)
-library(ggplot2)
-library(tidyr)
-library("mice")
-library("caret")
-library("rlist")
-library("psych")
-
+#install.packages("miclust")
+#install.packages("clue")
 ```
 
+NECESSARY LIBRARIES ARE IMPORTED
+
 ```{r}
-demographics = read_excel("CareRAbase.xlsx")
-
-CRP = demographics[,seq(14, 99, by=9)]
-
-CRP = as.data.frame(lapply(CRP,as.numeric))
-
-Exceeding = filter_all(CRP, any_vars(. > 75))
-Exceeding$ID = seq(1,length(Exceeding[,1]))
+library("readxl") #
+library("mice") #
+library("caret") #
+library("psych") #
+library("cluster")
+library("factoextra")
+library("plotly") #
+library("dplyr") #
+library("tidyverse") #
+library("rlist") #
+library("miclust") # 
+library("clue") #
 ```
 
 
-Count how many Observations are above a certain level
+LOADING THE DATASET
+
+The dataset imported contains the demographic information about the patients,
+namely:
+- Centre: The rheumatology centre that the patient attended
+- AgeW104: The age of the patient at the end of the trial (at week 104)
+- Gender
+- RF: Presence of rheumatoid factor in the serum (yes/no)
+- ACPA: Presence of Anti-cyclic citrullinated peptide antibody in the serum (yes/no)
+- Eros: Presence of bone erosions (yes/no)
+
+Furthermore, the dataset contains the nine variables employed in the analyses,
+assessed at the 10 visits. These are.
+- HAQ: Health Assessment Questionnaire
+- VAS.Pain: Pain measured on a visual analog scale (VAS)
+- TJC28: Tender joint count
+- SJC28: Swollen joint count
+- CRP: C-reactive protein
+- VASASS: Patient global health assessment measured on a VAS
+- VASPHYS: Physician global health assessment measured on a VAS
+- VASFAT: Fatigue measured on a VAS
+- ESR:Erythrocyte sedimentation rate
+
+For further information on the meaning on each variable, please consult
+Chapter 2 of the thesis.
+
 ```{r}
-sum(!is.na(CRP)) #number of non Nans
-sum(CRP > 20, na.rm = TRUE)
+df = read_excel("CareRAbase.xlsx")
 ```
 
+
+DATA CLEANING
+
+For this study we will employ only data from the last eight visits. Nonetheless,
+the first two visits (baseline and week 8) are momentarily kept to improve the 
+accuracy of the multiple imputation
+ 
 ```{r}
-boxplot(CRP, col = "lightblue", main = "Boxplot for each week, with y axis limits", xlab = "Week", ylab = "CRP")
+# Transform the columns containing the variables into numeric 
+df[,c(3,8:99)] = as.data.frame(lapply(df[,c(3,8:99)],as.numeric))
+
+# Remove the weight and height of the patients and any measurements
+df = df[,-(8:9)]
+```
+
+This time the PatientID is not removed as it will be necessary later for the
+multiple outputation
+
+################################################
+## Part 2: MISSING DATA AND MULTIPLE IMPUTATION
+################################################
+
+MISSINGNESS
+
+Compute the percentage of missingness across the visits considered 
+(this will be useful for the multiple imputation).
+
+```{r}
+#Percentage of missing data among the variables
+print(paste(round(sum(colSums(is.na(df[,26:97])))/(72*379)*100,1), "% is the 
+percentage of missing data among the variables in the study on longitudinal data"))
 ```
 
 
+MULTIPLE IMPUTATION
 
+Multiple imputation is carried out using classification and regression trees as 
+conditional model. Given the 17.2% overall percentage of missing data, we impute
+20 datasets. Further information can be found in Section 3.1 and 5.1  of the thesis
 
 ```{r}
-CRP_long <- gather(Exceeding, key = "CRP.", value = "Measurement", -ID)
-
-
-CRP_long$CRP. <- as.numeric(gsub("CRP.", "", CRP_long$CRP.))
-
-
-ggplot(CRP_long, aes(x = as.numeric(CRP.), y = Measurement, group = ID, color = as.factor(ID))) +
-  geom_path(na.rm = TRUE) +
-  geom_hline(yintercept = 20, linetype = 2) +
-  labs(title = "Individual trend for patients who surpass the 75 threshold",
-       x = "Week",
-       y = "CRP") +
-  theme_minimal()
+# Considering the high number of imputations, this takes around 12 minutes
+tempData <- mice(df, m=20, maxit=5, meth='cart', minbucket = 5, seed=500, print = FALSE)
 ```
 
+###############################
+## Part 3: MULTIPLE OUTPUTATION
+###############################
+
+Within-cluster resampling (or multiple outputation) is used to obtain samples 
+with independent observation. Before we need to transform each of the 20 imputed
+complete datasets from wide to long.
+
+Currently each dataset has 379 rows (one for each patient) and 72 columns
+(9 variables measured at 8 visits). We wish to transform each of the dataset so 
+that they will have 3032 rows (379 X the 8 visits) and 9 columns (measuring the
+variables). Each block of 8 rows will contain the measurements of one patients
+across the 8 visits.
+
+WIDE TO LONG TRANSFORMATION
 
 ```{r}
-demographics = read_excel("CareRAbase.xlsx")
-demographics[,c(3,8:99)] = as.data.frame(lapply(demographics[,c(3,8:99)],as.numeric))
-demographics = demographics[,-(8:9)]
+# We create a list that will contain the 20 Long datasets.
+complete_df <- list()
 
 
-tempData <- mice(demographics, m=20, maxit=5, meth='cart', minbucket = 5, seed=500, print = FALSE) #CHANGE DEMOGRAPHICS + CHANGE M = 15
-```
-
-WIDE TO LONG
-
-```{r}
-library(tidyverse)
-
-
-mybiglist <- list()
-
-
-for(i in 1:20){ #CHANGE TO 1:15
+for(i in 1:20){ 
   name = paste('DF',i,sep='')
-  tmp = complete(tempData,i)[,(26:97)] #tmp = complete(tempData,i)[,(1:18)] 
-  #19:90 or 91 CHECK WHETHER DEMOGRAPHICS ARE INCLUDED
-  tmp = cbind(demographics[,1],tmp)
+  
+  # Consider only the variables employed in the time-incorporated analysis 
+  #(disregard the demographics and visits at baseline and week 8)
+  tmp = complete(tempData,i)[,(26:97)] 
+  # Get the PatientID
+  tmp = cbind(df[,1],tmp)
+  
+  # The numbers of the weeks are removed from the variables, keeping only the variable names
   names(tmp) = c("id" ,rep(c("HAQ","VAS.pain","TJC28","SJC28","CRP","VASASS","VASPHYS","VASFAT","ESR"), times = 8))
-  #TIMES = how many visits
-  df =  rbind(tmp[,1:10], tmp[,c(1,11:19)], tmp[,c(1,20:28)], tmp[,c(1,29:37)], tmp[,c(1,38:46)], tmp[,c(1,47:55)], tmp[,c(1,56:64)], tmp[,c(1,65:73)]) #df =  rbind(tmp[,1:10], tmp[,c(1,11:19)])
-  #SARANNO 8 DIVERSI DATAFRAMES
-  df = df %>% arrange(id)
-  mybiglist[[name]] = df
+  
+  # The dataframe is "broken" into the 8 blocks of 9 variables which are put in
+  #long format
+  temp_df =  rbind(tmp[,1:10], tmp[,c(1,11:19)], tmp[,c(1,20:28)], tmp[,c(1,29:37)], tmp[,c(1,38:46)], tmp[,c(1,47:55)], tmp[,c(1,56:64)], tmp[,c(1,65:73)])
+  
+  # The dataset is ordered based on the patientID, making blocks of 8 rows for
+  #each patient
+  temp_df = temp_df %>% arrange(id)
+  
+  # The transformed dataset is added to the list
+  complete_df[[name]] = temp_df
 }
-
 ```
-
 
 
 MULTIPLE OUTPUTATION
-```{r}
-# Install and load the necessary packages
-# install.packages("dplyr")
-library(dplyr)
 
+Multiple outputation randomly selects one visit for each patient. The resulting 
+dataset comprises, for each patient, the nine variables measured at one of the
+eight visits. This procedure is repeated 100 times on each of the 20 complete
+imputed datasets, obtaining a total of 2000 datasets.
+
+```{r}
 # Function to sample one row per patient
 sample_one_row_per_patient <- function(longitudinal_data, patient_id_col) {
   result <- longitudinal_data %>%
@@ -113,104 +210,139 @@ sample_one_row_per_patient <- function(longitudinal_data, patient_id_col) {
   return(result)
 }
 
-# Example usage
-# Assuming your dataset is named 'longitudinal_data' and the patient ID column is named 'patient_id'
-# Replace 'longitudinal_data' and 'patient_id' with your actual data and column name
-result_df <- sample_one_row_per_patient(mybiglist$DF1, patient_id_col = id)
-
-
+# We create a list that will contain all 2000 datasets
 MEGALIST = list()
 
-for (i in 1:20) { #change to 15
+# For each of the 20 imputed datasets 
+for (i in 1:20) { 
+  # Repeat multiple outputation 100 times
   for (j in 1:100) {
-    result_df <- sample_one_row_per_patient(mybiglist[[i]], patient_id_col = id)
+    # Retrieve a dataset with only one row (visit) per each patient
+    result_df <- sample_one_row_per_patient(complete_df[[i]], patient_id_col = id)
+    
+    # Append it to the list of datasets
     MEGALIST = list.append(MEGALIST, as.data.frame(result_df))
   }
- # tmplist = replicate(2, as.data.frame(sample_one_row_per_patient(mybiglist[[i]], patient_id_col = id)))
-  
 }
-
-
 ```
 
 
+############################################
+## Part 4: EXPLORATORY FACTOR ANALYSIS (EFA)
+############################################
 
-CORRELATION LIST
+EFA is carried out on the correlation matrix of a dataset. Since we have 2000
+complete datasets, we compute the correlation matrix of each and average
+them. EFA is then carried out on the average correlation matrix.
+
+CORRELATION MATRICES
+
 ```{r}
+# We create a list that will store the correlation matrix of each dataset
 corrlist = list()
 
-#IMPLEMENT THIS
-#cor(prova[[1]][-1])
-
-for (i in 1:2000) { #CHANGE TO WHATEVER NUMBER
+for (i in 1:2000) { 
     tmpcorr = cor(MEGALIST[[i]][-1])
     corrlist <- list.append(corrlist, tmpcorr)
 }
 
-
+# The "ultimate" matrix contains the average of the 2000 correlation matrices 
 ultimate = Reduce("+",corrlist)/length(corrlist)
-# cor(as.data.frame(tmplist[-1,i]))
 ```
 
+EFA WITH PRINCIPAL COMPONENT EXTRACTION
 
-EFA
+We extract 3 factors and rotate them through promax rotation. Further details 
+about the extraction and rotation can be found in Sections 3.2 and 5.3 of the thesis
+
 ```{r}
-
 fit_baseline <- principal(ultimate, nfactors=3, rotate="promax")
 
-print(fit_baseline$loadings, cutoff = 0.00001)
+print(fit_baseline$loadings, cutoff = 0.3)
 ```
 
-NORMALIZATION
+
+RESCALING OF THE VARIABLES
+
+Variables need to be rescaled because they are measured on different ranges.
+HAQ for example has a range [0-3], whereas any variable measured on the VAS has
+a range [0-100]. All the variables are rescaled to a [0-100] range. Section 3.3
+of the thesis contains further information regarding the rescaling of CRP and ESR.
+This process is applied to each of the 2000 datasets.
+
 ```{r}
 names = c("HAQ","VAS.pain","TJC28","SJC28","CRP","VASASS","VASPHYS","VASFAT","ESR")
 
-
-for (i in 1:2000) { #CHANGE TO TOTAL NUMBER
+for (i in 1:2000) { 
     for (col_name in names) {
       if (grepl("HAQ", col_name))
         MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/3*100
       else if (grepl("JC", col_name))
-        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/28*100
+        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/28*100 #Rescaling of both TJC and SJC
       else if (grepl("CRP", col_name)) {
-        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/20*100 #CAMBIA VALORIIIIII (20)
+        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/20*100 
         MEGALIST[[i]][,col_name] = pmin(MEGALIST[[i]][,col_name], 100)
       }
       else if (grepl("ESR", col_name)) {
-        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/88*100 #CAMBIA TO 88
+        MEGALIST[[i]][,col_name] = MEGALIST[[i]][,col_name]/88*100 
         MEGALIST[[i]][,col_name] = pmin(MEGALIST[[i]][,col_name], 100)
       }
   }
 }
-
 ```
 
 
+####################################
+## Part 5: FACTOR SCORES EXPLORATION
+####################################
+
+We create the factor scores matrix by multiplied the scaled variables by their
+factor loadings and sum them up so that each factor would comprise the variables
+that loaded onto it. This is done for each of the 2000 datasets separately.
+Due to the different number of variables for each factor, each factor score was 
+then standardized to a [0–1] scale.
+A new list of 2000 datasets is created. Each dataset will now comprise 379 rows
+(one for each patient) and 3 columns (one for each factor).
+
 FACTOR SCORES
+
 ```{r}
+# We create a list containing the 2000 datasets of factor scores
 faclist = list()
+
 factors = data.frame(matrix(ncol = 0, nrow = 379))
 
-
-for (i in 1:2000) { #CHANGE TO WHATEVER NUMBER
+for (i in 1:2000) {
+  # Factor scores are based on the factor loadings and variable measurements
+  
+  # Patient reported factor
   factors$PRF = (0.901 * MEGALIST[[i]]$VASFAT) + (0.933 * MEGALIST[[i]]$VASASS) + (0.918 * MEGALIST[[i]]$VAS.pain) + (0.647 * MEGALIST[[i]]$HAQ)
+  
+  # Clinical factor
   factors$CF = (0.839 * MEGALIST[[i]]$TJC28) + (0.937 * MEGALIST[[i]]$SJC28) + (0.712 * MEGALIST[[i]]$VASPHYS)
+  
+  # Laboratory factor
   factors$LF = (0.850 + MEGALIST[[i]]$CRP) + (0.855 * MEGALIST[[i]]$ESR)
   
+  # Rescale the factors 
   process <- preProcess(as.data.frame(factors), method=c("range"))
   factors <- predict(process, as.data.frame(factors))
   
+  # Dataset is appended to the list
   faclist <- list.append(faclist, factors)
 }
 ```
 
 
+EXPLORATION OF FACTOR SCORES
 
-OVERALL MEAN AND STD OF ALL DATASETS (CHANGE THE ARGUMENT SO THAT YOU CAN INSERT THE NUMBER OF THE COLUMN AND GET ALL THREE FACTOR SCORES)
+We compute the mean and the standard deviation of each of the three factors 
+across all 2000 datasets
+
 ```{r}
-calculate_overall_mean_sd <- function(df_list) {
+calculate_overall_mean_sd <- function(df_list, f) {
   # Combine the first columns of all dataframes into a single vector
-  all_data <- unlist(lapply(df_list, function(df) df[, 3]))
+  all_data <- unlist(lapply(df_list, function(df) df[, f]))
 
   # Calculate overall mean and standard deviation
   overall_mean <- mean(all_data, na.rm = TRUE)
@@ -221,149 +353,166 @@ calculate_overall_mean_sd <- function(df_list) {
   return(result_vector)
 }
 
-result <- calculate_overall_mean_sd(faclist)
+print(paste("The mean for the patient-reported factor is: ", round(calculate_overall_mean_sd(faclist,1)["mean"],3)))
+
+print(paste("The standard deviation for the patient-reported factor is: ", round(calculate_overall_mean_sd(faclist,1)["sd"],3)))
+
+print(paste("The mean for the clinical factor is: ", round(calculate_overall_mean_sd(faclist,2)["mean"],3)))
+
+print(paste("The standard deviation for the clinical factor is: ", round(calculate_overall_mean_sd(faclist,2)["sd"],3)))
+
+print(paste("The mean for the laboratory factor is: ", round(calculate_overall_mean_sd(faclist,3)["mean"],3)))
+
+print(paste("The standard deviation for the laboratory factor is: ", round(calculate_overall_mean_sd(faclist,3)["sd"],3)))
 ```
 
 
+#####################################
+## Part 6: OPTIMAL NUMBER OF CLUSTERS
+#####################################
+
+While in the previous study, the optimal number of clusters was chosen separately 
+at the two time visits, here we have to find an optimal number across 2000 datasets.
+
+The CritCF criterios is employed, as explained in secion 5.4 of the thesis.
+
+CritCF
 
 ```{r}
+# This will be a vector containing, for each dataset, the optimal number of clusters
+optimal = rep(0,2000)
 
-hist(unlist(lapply(faclist, function(df) df[, 1])), breaks = 100, main="" , ylab= "", xlab="", las=1 , col="#56B4E9")
-
-
-
-```
-
-
-
-#####################################################
-# CLUSTERING
-#####################################################
-
-
-OPTIMAL NUMBER OF CLUSTERS (4)
-```{r}
-#install.packages("miclust")
-library(miclust)
-library(tidyverse)  # data manipulation
-library(cluster)    # clustering algorithms
-library(factoextra)
-library(clue)
-
-
-optm = rep(0,2000)
-a =  data.frame()
+# The CritCF value for each dataset, for each of the number of clusters considered
+# is stored in this dataset
+CritCF =  data.frame()
 
 for (i in 1:2000) {
-  xx = miclust(faclist[[i]], ks = 4:8, distance = "euclidean", initcl = "hc", verbose = FALSE)
-  # a contains the CritCF for 4:6 for each of the 2000 datasets
-  a = rbind(a, data.frame(t(unlist(xx$critcf)))) 
-  # optm is a 2000 cells vector containing the optimal number of clusters for each of the 2000 datasets
-  optm[i] = xx$kfin
+  # We check for an optimal number of clusters between 4 and 8
+  opt = miclust(faclist[[i]], ks = 4:8, distance = "euclidean", initcl = "hc", verbose = FALSE)
+
+  CritCF = rbind(CritCF, data.frame(t(unlist(opt$critcf)))) 
+  optimal[i] = opt$kfin
 }
 
-names(a) = c(4,5,6,7,8)
-boxplot(a, col = "lightblue", main = "CritCF distribution by number of cluster (k)", xlab = "k", ylab = "CritCF")
-
-table(optm)/20
+# Distribution of CritCF across all datasets
+names(CritCF) = c(4,5,6,7,8)
+boxplot(CritCF, col = "lightblue", main = "CritCF distribution by number of cluster (k)", xlab = "k", ylab = "CritCF")
 ```
 
-CREATE CLUSTERS OUT OF CENTROIDS AND FIND THEIR CENTROIDS
 ```{r}
+# Percentage of datasets that have a certain k as optimal number of clusters
+table(optimal)/20
+```
+
+We have found 4 to be the optimal number of clusters with the highest frequency
+
+#####################
+## Part 7: CLUSTERING
+#####################
+
+We can perform Hierarchical K-means clustering to each of the dataset, looking 
+for 4 clusters. Given the heterogeneity of the datasets, we look for a "gold
+standard" to which each dataset's clusters can be compared, so that they can be
+aligned. Alignment of the clusters will make their interpretation easier. 
+
+A cluster analysis is performed on the 8000 centroids obtained from the four
+cluster partitions applied to the 2000 datasets. Four global centroids are
+achieved, representing the centers of the clusters from the datasets. Further 
+information can be found in section 5.4 of the thesis
+
+CLUSTER ANALYSIS ON THE 8000 CENTROIDS
+
+```{r}
+# The centroids dataframe will hold the centroid of the four clusters for each
+# of the 2000 datasets
 centroids = data.frame()
+
+# The clusters dataframe will hold the allocation of each of the 379 patients
+# to one of the clusters in each of the 2000 datasets. Note that for now the clusters
+# have not been aligned yet. 
 clusters = data.frame(matrix(vector(), 379, 2000))
 
 for (i in 1:2000) {
-  #if (optm[i] == 4) {
+    # Perform hierarchical K-means clustering on each dataset
     cl = hkmeans(faclist[[i]], 4)
-    centroids = rbind(centroids, cbind(cl$centers, cl$size))
-    clusters[,i] =  cl$cluster
     
-  #}
+    # Store the centroids and the size
+    centroids = rbind(centroids, cbind(cl$centers, cl$size))
+    
+    # Allocate the patients
+    clusters[,i] =  cl$cluster
 }
 
-
-centroids <- centroids %>%
-  mutate(GroupedRowNames = rep(seq(1, nrow(centroids)/4), each = 4),
-         RowName = paste0((GroupedRowNames - 1) * 10 + 1, ":", GroupedRowNames * 10 + 4))
-centroids = centroids[,-6]
-
-#Da cambiare i valori in modo da arrivare a 8000!
-centroids$cluster = rep(seq(1,4), 2000)
-centroids$newcluster = rep(0, 8000)
-
-
+# hierarchical K-means clustering is performed on the 8000 centroids
 centerstotal = hkmeans(centroids[,c(1,2,3)],4)
+
+# The general list contains the centroids of the four macro-clusters which will
+# be used for the alignment of the datasets' clusters
+general = split(centerstotal$centers, seq(4))
 ```
 
+We have now obtained the four global centroids of the four macro-clusters.
+The clusters of each dataset are aligned based on their vicinity to the global 
+centroids.
 
 CLUSTER ALIGNMENT 
+
+We create a swap function which, for each dataset, alignes the clusters to the 
+global centroids based on their vicinity.
+
 ```{r}
-general = split(centerstotal$centers, seq(4))
-
-
 swap = function(vect) {
-  # Compute the distance matrix 
+  # The distance matrix between the four centroids and the four global centroids
+  # is computed
   distance_matrix <- outer(vect, general, Vectorize(function(x, y) sum((x - y)^2)))
 
-  # Use the Hungarian algorithm to find the optimal pairing
+  # The optimal pairing is achieved through an optimization problem
   assignment <- solve_LSAP(distance_matrix)
 
   return(assignment[])
-  # Get the indices of the matched vectors
-  #matched_indices <- data.frame(list1_index = 1:length(list1), list2_index = seq_along(assignment))
 }
+
+
+# The four clusters are originally labelled in order, before alignment
+centroids$cluster = rep(seq(1,4), 2000)
+
+# The "newcluster" column will hold the actual label of the cluster, after alignment
+centroids$newcluster = rep(0, 8000)
 
 
 for (i in 1:2000) {
+  # We split the centroids dataframe in blocks of four (representing the four
+  # clusters from each dataset)
   x <- split(as.matrix(as.data.frame(centroids[((i-1)*4+1):((i-1)*4+4),1:3])), seq(4))
-  relabel = swap(x)
-  centroids[((i-1)*4+1):((i-1)*4+4),7] = relabel
-  #RELABEL
-  clusters[,i] =  relabel[clusters[,i]]
   
+  # The clusters of each block (dataframe) are aligned through the swap function
+  relabel = swap(x)
+  
+  # The "newcluster" column is updated based on the alignment of the clusters
+  centroids[((i-1)*4+1):((i-1)*4+4),6] = relabel
+  clusters[,i] =  relabel[clusters[,i]]
 }
-
-
-table(centroids$newcluster)
-
-aggregate(V4~newcluster,centroids,sum)/2000
-
-
-
-num <- aggregate(V4~newcluster,centroids,length)
-names(num)[2] <- 'num'
-
-totalB <- aggregate(V4~newcluster,centroids,sum)/2000
-names(totalB)[2] <- 'totalB'
-totalB
-
-
 ```
 
-COMPUTE MEAN AND STD FOR THE THREE FACTORS ACROSS THE CLUSTERS
+AVERAGE CLUSTER SIZE
+
+We compute the average cluster size by averaging the number of patients in each
+cluster across the 2000 datasets
+
 ```{r}
-calculate_stats_by_group <- function(dataframe, value_col, group_col) {
-  result <- tapply(dataframe[[value_col]], dataframe[[group_col]], function(x) c(mean = mean(x), sd = sd(x)))
-  print(result)
-  #return(as.data.frame(result))
-}
-
-
-calculate_stats_by_group(centroids, "PRF", "newcluster")
+table(as.vector(as.matrix(clusters)))/2000
 ```
 
-
-
-DOUBLE CHECK THE CLUSTER ASSIGNMENT SIZE
-```{r}
-flat_vector <- as.vector(as.matrix(clusters))
-
-# Use the table function to get the frequency of each unique value
- table(flat_vector)/2000
-```
+#################################
+## Part 8: ASSIGNMENT OF PATIENTS
+#################################
 
 ASSIGN EACH PATIENT TO A CLUSTER BY MAJORITY VOTE
+
+The allocation of each patient to a specific cluster is made by majority vote.
+Each patient is assigned to the cluster to which they have been assigned most
+frequently in the 2000 datasets. 
+
 ```{r}
 # Function to get the most frequent value in a vector
 most_frequent_value <- function(x) {
@@ -371,21 +520,32 @@ most_frequent_value <- function(x) {
   as.numeric(names(tbl)[which.max(tbl)])
 }
 
-# Create a new column with the most frequent value for each row
+# Create a new column with the most frequent cluster for each patient
 clusters$most_frequent_col <- apply(clusters, 1, most_frequent_value)
+```
 
-# Print the updated dataframe
+CLUSTER SIZE ESTIMATE
+
+On top of the average cluster size, another estimate of the cluster size is computed
+by counting how many patients are assigned to a cluster by majority vote
+
+```{r}
 table(clusters$most_frequent_col)
 ```
 
 PERCENTAGE OF ASSIGNMENT
-```{r}
 
+After computing the frequency of allocation for each patient, we determine the 
+average frequency of allocation to the patients’ primary clusters. 
+This allows us to estimate on average how often patients have been allocated to 
+their primary cluster.
+
+```{r}
 # Function to get the most frequent value and its percentage in a vector
 most_frequent_stats <- function(x) {
   tbl <- table(x)
   most_frequent <- as.numeric(names(tbl)[which.max(tbl)])
-  percentage <- tbl[most_frequent] / 20 #length(x) * 100
+  percentage <- tbl[most_frequent] / 20 
   c(most_frequent = most_frequent, percentage = percentage)
 }
 
@@ -395,22 +555,55 @@ clusters$most_frequent_col <- result[, 1]
 clusters$percentage_col <- result[, 2]
 
 
-# average percentage of frequency for each clusters
+# Average percentage of frequency for each clusters
 aggregate(percentage_col ~ most_frequent_col, data = clusters, FUN = mean)
-
-members_of_cl2 = clusters[clusters$most_frequent_col == 2,]
-summary(members_of_cl2$percentage_col)
 ```
 
-COMPUTE MEAN AND STD FOR EACH CLUSTER BY PATIENT AVERAGE
+###################################
+## Part 9: CLUSTERS' INTERPRETATION
+###################################
+
+CENTROIDS AND STANDARD DEVIATIONS OF CLUSTERS
+
+The centroids of the clusters can be evaluated through different measures:
+
+1) Compute the average centroid of each cluster across the 2000 datasets
+
+Through the "calculate_stats_by_group" function we can compute the mean and the 
+standard deviation of each factor for each of the clusters across all the datasets.
+The standard deviations do not directly represent the variability among the 
+patients grouped within a certain cluster. Instead, they capture the variance 
+inherent to the particular cluster for three factors across the datasets.
+
 ```{r}
-for (i in 1:2000) {
-  faclist[[i]]$cluster = clusters[,i]
+calculate_stats_by_group <- function(dataframe, value_col, group_col) {
+  result <- tapply(dataframe[[value_col]], dataframe[[group_col]], function(x) c(mean = mean(x), sd = sd(x)))
+  print(result)
+  #return(as.data.frame(result))
 }
 
+# Patient-reported factor
+calculate_stats_by_group(centroids, "PRF", "newcluster")
 
+# Clinical factor
+calculate_stats_by_group(centroids, "CF", "newcluster")
 
-# Create an empty list to store the dataframes
+# Laboratory factor
+calculate_stats_by_group(centroids, "LF", "newcluster")
+```
+
+2) Compute the average factor score of each cluster through the patients' factor scores
+
+This measure is computed by averaging all the measurements from each time a
+patient was allocated to a certain cluster. Thus, this measure reflects the 
+variability among the patients grouped within each cluster. As expected, the 
+centroids’ locations do not vary greatly. However, the patient average factor
+scores have a much higher standard deviation for all factors, representing the 
+variance of the factor scores on a patient level.
+
+```{r}
+# We create a list of four empty dataframes. Each dataframe will contain the 
+# factor scores for each time a patient has been assigned to one of the four clusters
 averagepatients <- list()
 
 for (j in 1:4) {
@@ -419,6 +612,9 @@ for (j in 1:4) {
 
 
 for (i in 1:2000) {
+  # In each of the factor scores dataset, we match the patients to their cluster
+  faclist[[i]]$cluster = clusters[,i]
+  
   for (j in 1:4) {
       # Subset the data for each factor
     subset_data = filter(faclist[[i]], cluster == j)
@@ -427,268 +623,94 @@ for (i in 1:2000) {
   }
 }
 
-PRF = c(averagepatients[[1]]$PRF, averagepatients[[2]]$PRF, averagepatients[[3]]$PRF, averagepatients[[4]]$PRF)
+# To obtain the mean (or standard deviation) of a factor of a cluster we need this
+# formula: mean(averagepatients[[X]]$FactorAbbreviation), where X is the number of
+# the cluster we wish to inspect and Factor abbreviation is either "PRF", "CF", or "LF"
+# For example:
+mean(averagepatients[[3]]$CF)
+# Provides the mean of the clinical factor for the third cluster (the one labelled
+# as "inflammatory burden").
+```
+To determine the clinical relevance of the cluster solutions, we examined 
+socio-demographic and health variables, as well as treatment strategies.
 
-CF = c(averagepatients[[1]]$CF, averagepatients[[2]]$CF, averagepatients[[3]]$CF, averagepatients[[4]]$CF)
+For each cluster we checked:
+- Mean age
+- Percentage of women
+- Percentage of patients that have been classified as low-risk
+- Percentage of patients that displayed comorbidities at baseline
+- Distribution of patients across the clusters for each treatment strategy
 
-LF = c(averagepatients[[1]]$LF, averagepatients[[2]]$LF, averagepatients[[3]]$LF, averagepatients[[4]]$LF)
+We load another file containing extra information on the patients
 
+```{r}
+group = read_excel("Interpretation.xlsx")
 ```
 
 
+We create a dataframe that contains for each patients:
+- Patient ID
+- The factor scores at baseline (1) and week8 (2)
+- The clusters they belonged to at baseline and at week 8
+- The demographics employed at the beginning of the analysis (gender, age, etc.)
+- The treatment group
+- The risk group
+- Presence of comorbidities
+
 ```{r}
-dat <- readRDS("CareRA.rds")
-SR = dat$data
-SR = SR$das28.sr
-```
-
-
-```{r}
-patient_groups = read_excel("intensification profiles at each visit FINAL.xlsx") 
-patient_groups = patient_groups[(1:379),]
-otro = read_excel("CareRA_nonimp_costs.xlsx")
-RAQOL = read_excel("CareRA PRO database_totalscores.xlsx")
-RAQOL = RAQOL[,106:109]
-
-#ids = complete_df[week8$cluster == 3,]
-TOTAL = cbind(clusters$most_frequent_col, demographics[,2:7], patient_groups[,3:4], otro[,11], RAQOL, SR)  #THIS WAS THE "NEW" DATAFRAME
+TOTAL = cbind(group[,1], clusters$most_frequent_col, df[,2:7],group[,2:5])  #THIS WAS THE "NEW" DATAFRAME
+#TOTAL = cbind(group[,1], factors, cluster_bl, cluster_w8, df[,1:6], group[,2:5])
 TOTAL$`risk group` = as.factor(TOTAL$`risk group`)
 TOTAL$Comorbidities = as.factor(TOTAL$Comorbidities)
-#TOTAL$treatmentgroup[TOTAL$treatmentgroup == 4] <- 2
 TOTAL$treatmentgroup = as.factor(TOTAL$treatmentgroup)
 names(TOTAL)[names(TOTAL) == "clusters$most_frequent_col"] <- "clusters"
-names(TOTAL)[names(TOTAL) == "W104_RAQoL_TOTALms"] <- "RAQ"
+```
 
+Employing the previously defined "calculate_stats_by_group" we can get the average
+age and standard deviation for the patients in the clusters.
+This measure, alongside the ones presented in the next paragraph, are computed 
+for each cluster by considering only the patients that were assigned to the
+cluster by majority vote. 
 
-calculate_stats_by_group <- function(dataframe, value_col, group_col) {
-  result <- tapply(dataframe[[value_col]], dataframe[[group_col]], function(x) c(mean = mean(x), sd = sd(x)))
-  print(result)
-  #return(as.data.frame(result))
-}
-
-
+```{r}
 calculate_stats_by_group(TOTAL, "AgeW104", "clusters")
+```
 
+The function "generate_summary" provides a distribution of patients across the 
+clusters for a certain categorical variable. It can be employed for factors such
+as the gender, risk group or comorbidities. 
 
+```{r}
 generate_summary <- function(dataframe, categorical_col, based_on_col) {
   summary_table <- table(dataframe[[based_on_col]], dataframe[[categorical_col]])
   print(summary_table)
-  #return(as.data.frame.matrix(summary_table))
 }
 
-
-
-result_summary <- generate_summary(TOTAL, "risk group", "clusters")
-result_summary <- generate_summary(TOTAL, "treatmentgroup", "clusters")
-result_summary <- generate_summary(TOTAL, "Gender", "clusters")
-result_summary <- generate_summary(TOTAL, "Comorbidities", "clusters")
-result_summary <- generate_summary(TOTAL, "SR", "clusters")
-
-```
-
-```{r}
-# Use aggregate to calculate the mean of Value based on Group
-result <- aggregate(LF ~ newcluster, data = centroids, FUN = sd)
-
-# Print the result
-print(result)
-
+# Examples
+generate_summary(TOTAL, "risk group", "clusters")
+generate_summary(TOTAL, "Gender", "clusters")
+generate_summary(TOTAL, "Comorbidities", "clusters")
 ```
 
 
+############################
+## Part 10: 3D REPRESENTATION
+############################
 
+We provide a 3D representation of the clusters. Note that this plot does not depict
+the patients assigned to the clusters, but rather the centroids of the clusters
+across the 2000 datasets. Thus, for example, the first and the fourth clusters
+will have the same amount of datapoints in this plot, although the number of 
+patients classified in the two differs significantly.
+We take a sample of 1000 clusters to avoid having a plot that is too dense.
 
-```{r}
-# Install and load required packages if not already installed
-# install.packages("dplyr")
-# install.packages("tidyr")
- library(dplyr)
- library(tidyr)
-
-# Function to compute percentage of missing values in a column for each group
-compute_missing_percentage <- function(data, group_column, target_column) {
-  result <- data %>%
-    group_by_at(group_column) %>%
-    summarize(missing_percentage = mean(is.na(.data[[target_column]])) * 100)
-  
-  return(result)
-}
-
-
-# Call the function
-result <- compute_missing_percentage(TOTAL, "clusters", "RAQ")
-
-# Print the result
-print(result)
-
-```
-
+In a PDF rendition, this plot will appear blank. For the 3D plot, please run 
+the code in R.
 
 ```{r}
-sum(is.na(TOTAL$RAQ))
-
-TOTAL$RAQ = sqrt(TOTAL$RAQ)
-
-
-# Levene's test for homogeneity of variances with handling NA
-library(car)
-leveneTest(RAQ ~ as.factor(clusters), data = TOTAL, na.action = na.exclude)
-
-# Check normality of residuals using a Q-Q plot with handling NA
-model <- aov(RAQ ~ as.factor(clusters), data = TOTAL, na.action = na.exclude)
-qqnorm(residuals(model, na.action = na.exclude))
-qqline(residuals(model, na.action = na.exclude))
-
-```
-
-
-
-
-```{r}
-Model2 <- lm(RAQ ~ as.factor(clusters), data = TOTAL, na.action = na.exclude)
-
-summary.aov(Model2)
-
-library(emmeans) 
-PostHoc <- emmeans(Model2, "clusters")
-PostHoc
-
-pairs(PostHoc)
-```
-
-```{r}
-# Install and load ggplot2 if not already installed
-# install.packages("ggplot2")
-library(ggplot2)
-
-# Create a ggplot density plot without considering NA
-ggplot(data.frame(TOTAL), aes(x = RAQ)) +
-  geom_density(na.rm = TRUE) +
-  ggtitle("Density Plot without NA") +
-  xlab("Numeric Variable")
-
-```
-
-
-
-```{r}
-library(plotly)
-library(dplyr)
-
 PLOTS3D = centroids[sample(nrow(centroids), 1000), ]
-
-
 
 p <- plot_ly(PLOTS3D, x=~PRF, y=~CF, z=~LF, color=~as.factor(newcluster)) %>%
      add_markers(size=1.5)
 print(p)
 ```
-
-
-
-CLUSTERING
-```{r}
-
-
-fviz_nbclust(faclist[[2]], hkmeans, method = "silhouette")
-
-gap_stat <- clusGap(faclist[[2]], FUN = hkmeans, #nstart = 25,
-                    K.max = 10, B = 50)
-
-print(gap_stat, method = "firstSEmax")
-
-gap_stat$Tab[,c(3,4)]
-
-fviz_gap_stat(gap_stat)
-
-
-```
-
-
-
-```{r}
-library(cluster)
-gap_stat <- clusGap(factors, FUN = kmeans, nstart = 25,
-                    K.max = 10, B = 50)
-
-firstmax(fviz_gap_stat(gap_stat))
-
-
-x = fviz_nbclust(factors, kmeans, method = "gap_stat")
-
-
-gap_stat <- clusGap(factors, FUN = kmeans, nstart = 25, K.max = 10, B = 10)
-optimal_clusters <- gap_stat$tab[which.max(gap_stat$tab$gap), "k"]
-
-```
-
-
-
-
-
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-### 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-
-
-MULTIPLE OUTPUTATION ALTERNATIVE
-```{r}
-# Specify the block size
-block_size <- 8 #change to 8 because we have 8 visits per patient
-
-# Load the dplyr package
-library(dplyr)
-
-# Function to randomly select one row from each block
-random_sample_block <- function(group) {
-  group[sample(nrow(group), 1), ]
-}
-
-# Apply the function to each block
-sampled_df <- df %>%
-  group_by(block = (row_number() - 1) %/% block_size) %>%
-  do(random_sample_block(.)) %>%
-  ungroup() %>%
-  select(-block)
-
-# %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-
-many = function(df, block_size) {
-  df %>%
-    group_by(block = (row_number() - 1) %/% block_size) %>%
-    do(random_sample_block(.)) %>%
-    ungroup() %>%
-    select(-block)
-}
-
-MEGALIST = list()
-
-for (i in 1:5) { #change to 15
-  tmplist = replicate(100, as.data.frame(many(mybiglist[[i]],8))) #8 is the blocksize
-  MEGALIST[[i]] = tmplist
-}
-```
-
-CORRELATION LIST ALTERRNATIVE
-```{r}
-library(rlist)
-
-corrlist = list()
-
-#IMPLEMENT THIS
-#cor(prova[[1]][-1])
-
-
-for (i in 1:5) { #CHANGE TO 15
-  for (j in 1:100) {
-    tmpcorr = cor(as.data.frame(MEGALIST[[i]][-1,j])) #MIGHT HAVE TO CHANGE THIS IN CASE NEW VERSION OF MEGALIST IS BETTER
-    corrlist <- list.append(corrlist, tmpcorr)
-  }
-}
-
-
-ultimate = Reduce("+",corrlist)/length(corrlist)
-# cor(as.data.frame(tmplist[-1,i]))
-```
-
