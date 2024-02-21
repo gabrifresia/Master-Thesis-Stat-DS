@@ -3,7 +3,7 @@
 
 Leiden University's "Statistics and Data Science" programme \
 Master's Thesis \
-Student: Gabriele Fresia (student number s3121283) \
+Student: Gabriele Fresia  \
 Supervisors: Anikó Lovik
 
 ## Introduction
